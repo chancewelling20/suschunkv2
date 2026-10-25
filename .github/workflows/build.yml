@@ -1,0 +1,919 @@
+name: Build SusChunk V2 jar
+
+# This ONE file contains the whole mod. It writes the source files, builds the jar,
+# and puts it on this repo's Releases page. Runs automatically when you commit it.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Write the mod source files
+        run: |
+          cat > "settings.gradle.kts" <<'__SUSCHUNK_EOF__'
+          pluginManagement {
+              repositories {
+                  maven {
+                      name = "Fabric"
+                      url = uri("https://maven.fabricmc.net/")
+                  }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          rootProject.name = "suschunk-v2"
+          __SUSCHUNK_EOF__
+          cat > "gradle.properties" <<'__SUSCHUNK_EOF__'
+          org.gradle.jvmargs=-Xmx2G
+          org.gradle.configuration-cache=false
+
+          # Mod Properties
+          maven_group=com.suschunk
+          archives_base_name=suschunk-v2
+          __SUSCHUNK_EOF__
+          cat > "build.gradle.kts" <<'__SUSCHUNK_EOF__'
+          plugins {
+              alias(libs.plugins.fabric.loom)
+          }
+
+          base {
+              archivesName = properties["archives_base_name"] as String
+              version = libs.versions.mod.version.get()
+              group = properties["maven_group"] as String
+          }
+
+          repositories {
+              maven {
+                  name = "meteor-maven"
+                  url = uri("https://maven.meteordev.org/releases")
+              }
+              maven {
+                  name = "meteor-maven-snapshots"
+                  url = uri("https://maven.meteordev.org/snapshots")
+              }
+          }
+
+          dependencies {
+              // Fabric
+              minecraft(libs.minecraft)
+              mappings(variantOf(libs.yarn) { classifier("v2") })
+              modImplementation(libs.fabric.loader)
+
+              // Meteor
+              modImplementation(libs.meteor.client)
+          }
+
+          tasks {
+              processResources {
+                  val propertyMap = mapOf(
+                      "version" to project.version,
+                      "mc_version" to libs.versions.minecraft.get()
+                  )
+
+                  inputs.properties(propertyMap)
+
+                  filteringCharset = "UTF-8"
+
+                  filesMatching("fabric.mod.json") {
+                      expand(propertyMap)
+                  }
+              }
+
+              jar {
+                  inputs.property("archivesName", project.base.archivesName.get())
+
+                  from("LICENSE") {
+                      rename { "${it}_${inputs.properties["archivesName"]}" }
+                  }
+              }
+
+              java {
+                  sourceCompatibility = JavaVersion.VERSION_21
+                  targetCompatibility = JavaVersion.VERSION_21
+              }
+
+              withType<JavaCompile> {
+                  options.encoding = "UTF-8"
+                  options.release = 21
+                  options.compilerArgs.add("-Xlint:deprecation")
+                  options.compilerArgs.add("-Xlint:unchecked")
+              }
+          }
+          __SUSCHUNK_EOF__
+          mkdir -p "gradle"
+          cat > "gradle/libs.versions.toml" <<'__SUSCHUNK_EOF__'
+          [versions]
+          mod-version = "2.0.0"
+
+          # Fabric (https://fabricmc.net/develop)
+          minecraft = "1.21.11"
+          yarn-mappings = "1.21.11+build.3"
+          fabric-loader = "0.18.2"
+
+          # Loom (https://github.com/FabricMC/fabric-loom)
+          loom = "1.14-SNAPSHOT"
+
+          # Meteor (https://github.com/MeteorDevelopment/meteor-client/)
+          meteor = "1.21.11-SNAPSHOT"
+
+          # Mods
+
+          [libraries]
+          # Fabric base
+          minecraft = { module = "com.mojang:minecraft", version.ref = "minecraft" }
+          yarn = { module = "net.fabricmc:yarn", version.ref = "yarn-mappings" }
+          fabric-loader = { module = "net.fabricmc:fabric-loader", version.ref = "fabric-loader" }
+
+          # Meteor client
+          meteor-client = { module = "meteordevelopment:meteor-client", version.ref = "meteor" }
+
+          # Mods
+
+          [plugins]
+          fabric-loom = { id = "fabric-loom", version.ref = "loom" }
+          __SUSCHUNK_EOF__
+          mkdir -p "src/main/resources"
+          cat > "src/main/resources/fabric.mod.json" <<'__SUSCHUNK_EOF__'
+          {
+            "schemaVersion": 1,
+            "id": "suschunk-v2",
+            "version": "${version}",
+            "name": "SusChunk V2",
+            "description": "Meteor Client addon: bud-count based sus chunks with clustering, hole filtering and flat through-walls markers.",
+            "authors": [
+              "you"
+            ],
+            "license": "CC0-1.0",
+            "environment": "client",
+            "entrypoints": {
+              "meteor": [
+                "com.suschunk.v2.SusChunkV2Addon"
+              ]
+            },
+            "custom": {
+              "meteor-client:color": "60,220,90"
+            },
+            "depends": {
+              "fabricloader": ">=0.18.0",
+              "minecraft": "~1.21.11",
+              "java": ">=21",
+              "meteor-client": "*"
+            }
+          }
+          __SUSCHUNK_EOF__
+          mkdir -p "src/main/java/com/suschunk/v2"
+          cat > "src/main/java/com/suschunk/v2/SusChunkV2Addon.java" <<'__SUSCHUNK_EOF__'
+          package com.suschunk.v2;
+
+          import com.suschunk.v2.modules.SusChunkV2;
+          import meteordevelopment.meteorclient.addons.MeteorAddon;
+          import meteordevelopment.meteorclient.systems.modules.Category;
+          import meteordevelopment.meteorclient.systems.modules.Modules;
+
+          public class SusChunkV2Addon extends MeteorAddon {
+              public static final Category CATEGORY = new Category("Sus Chunk");
+
+              @Override
+              public void onInitialize() {
+                  Modules.get().add(new SusChunkV2());
+              }
+
+              @Override
+              public void onRegisterCategories() {
+                  Modules.registerCategory(CATEGORY);
+              }
+
+              // Must be the parent package of the module classes, otherwise @EventHandler methods won't register.
+              @Override
+              public String getPackage() {
+                  return "com.suschunk.v2";
+              }
+          }
+          __SUSCHUNK_EOF__
+          mkdir -p "src/main/java/com/suschunk/v2/modules"
+          cat > "src/main/java/com/suschunk/v2/modules/SusChunkV2.java" <<'__SUSCHUNK_EOF__'
+          package com.suschunk.v2.modules;
+
+          import com.suschunk.v2.SusChunkV2Addon;
+          import it.unimi.dsi.fastutil.longs.Long2IntMap;
+          import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
+          import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+          import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+          import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
+          import it.unimi.dsi.fastutil.longs.LongArrayList;
+          import it.unimi.dsi.fastutil.longs.LongIterator;
+          import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+          import meteordevelopment.meteorclient.events.packets.PacketEvent;
+          import meteordevelopment.meteorclient.events.render.Render3DEvent;
+          import meteordevelopment.meteorclient.events.world.TickEvent;
+          import meteordevelopment.meteorclient.renderer.ShapeMode;
+          import meteordevelopment.meteorclient.settings.BoolSetting;
+          import meteordevelopment.meteorclient.settings.ColorSetting;
+          import meteordevelopment.meteorclient.settings.DoubleSetting;
+          import meteordevelopment.meteorclient.settings.IntSetting;
+          import meteordevelopment.meteorclient.settings.Setting;
+          import meteordevelopment.meteorclient.settings.SettingGroup;
+          import meteordevelopment.meteorclient.systems.modules.Module;
+          import meteordevelopment.meteorclient.utils.render.color.Color;
+          import meteordevelopment.meteorclient.utils.render.color.SettingColor;
+          import meteordevelopment.orbit.EventHandler;
+          import net.minecraft.block.BlockState;
+          import net.minecraft.block.Blocks;
+          import net.minecraft.client.world.ClientWorld;
+          import net.minecraft.network.packet.Packet;
+          import net.minecraft.network.packet.s2c.play.BlockUpdateS2CPacket;
+          import net.minecraft.network.packet.s2c.play.ChunkDataS2CPacket;
+          import net.minecraft.network.packet.s2c.play.ChunkDeltaUpdateS2CPacket;
+          import net.minecraft.network.packet.s2c.play.LightUpdateS2CPacket;
+          import net.minecraft.util.math.BlockPos;
+          import net.minecraft.util.math.ChunkPos;
+          import net.minecraft.util.math.Direction;
+          import net.minecraft.util.math.Vec3d;
+          import net.minecraft.world.Heightmap;
+          import net.minecraft.world.LightType;
+          import net.minecraft.world.World;
+          import net.minecraft.world.chunk.ChunkSection;
+          import net.minecraft.world.chunk.WorldChunk;
+
+          import java.util.ArrayList;
+          import java.util.Arrays;
+          import java.util.Iterator;
+          import java.util.LinkedHashMap;
+          import java.util.List;
+          import java.util.Map;
+          import java.util.concurrent.ConcurrentLinkedQueue;
+
+          /**
+           * SusChunk V2
+           *
+           * Scans loaded chunks for amethyst buds (including buds hidden by anti-xray, using the same
+           * light-level "Hidden Bud" trick as AmethystBypass), turns bud counts into sus chunks,
+           * merges nearby ones into a single base estimate, moves markers away from chunks that
+           * already have dug shafts, and draws flat see-through chunk planes.
+           */
+          public class SusChunkV2 extends Module {
+              private static final long SCAN_BUDGET_NANOS = 2_000_000L; // max ~2 ms of scanning per tick
+              private static final long[] NO_HOLES = new long[0];
+
+              // ---------------------------------------------------------------- settings
+              private final SettingGroup sgBuds = settings.createGroup("Buds");
+              private final SettingGroup sgCluster = settings.createGroup("Cluster");
+              private final SettingGroup sgHoles = settings.createGroup("Holes");
+              private final SettingGroup sgRender = settings.createGroup("Render");
+
+              private final Setting<Boolean> hiddenBuds = sgBuds.add(new BoolSetting.Builder()
+                  .name("hidden-bud-mode")
+                  .description("Find buds hidden by anti-xray using the light-level Hidden Bud scan.")
+                  .defaultValue(true)
+                  .build());
+
+              private final Setting<Boolean> visibleBuds = sgBuds.add(new BoolSetting.Builder()
+                  .name("count-visible-buds")
+                  .description("Also count buds and clusters the server actually sent.")
+                  .defaultValue(true)
+                  .build());
+
+              private final Setting<Integer> lowThreshold = sgBuds.add(new IntSetting.Builder()
+                  .name("low-bud-threshold")
+                  .description("Minimum buds for a chunk to become a (blue) sus chunk.")
+                  .defaultValue(1)
+                  .range(1, 512)
+                  .sliderRange(1, 64)
+                  .build());
+
+              private final Setting<Integer> highThreshold = sgBuds.add(new IntSetting.Builder()
+                  .name("high-bud-threshold")
+                  .description("Buds at or above this make the sus chunk green instead of blue.")
+                  .defaultValue(8)
+                  .range(1, 512)
+                  .sliderRange(1, 64)
+                  .build());
+
+              private final Setting<Integer> clusterRadius = sgCluster.add(new IntSetting.Builder()
+                  .name("cluster-radius")
+                  .description("Sus chunks within this many chunks of each other count as the same cluster.")
+                  .defaultValue(3)
+                  .range(1, 8)
+                  .build());
+
+              private final Setting<Integer> minClusterSize = sgCluster.add(new IntSetting.Builder()
+                  .name("min-cluster-size")
+                  .description("A cluster needs at least this many sus chunks to be merged into one marker between them.")
+                  .defaultValue(3)
+                  .range(2, 12)
+                  .build());
+
+              private final Setting<Boolean> detectHoles = sgHoles.add(new BoolSetting.Builder()
+                  .name("detect-holes")
+                  .description("Detect 1x1 shafts dug down. A chunk with shafts was already searched, so the marker moves to a nearby chunk without any.")
+                  .defaultValue(true)
+                  .build());
+
+              private final Setting<Integer> minHoleDepth = sgHoles.add(new IntSetting.Builder()
+                  .name("min-hole-depth")
+                  .description("How much lower than all 4 neighbouring columns a column must be to count as a dug shaft.")
+                  .defaultValue(6)
+                  .range(3, 40)
+                  .build());
+
+              private final Setting<Boolean> ignoreOwnHoles = sgHoles.add(new BoolSetting.Builder()
+                  .name("ignore-own-holes")
+                  .description("Ignore any shaft that is, or was, within a few blocks of you, so the one you dig doesn't move the marker.")
+                  .defaultValue(true)
+                  .build());
+
+              private final Setting<Integer> ownHoleRadius = sgHoles.add(new IntSetting.Builder()
+                  .name("own-hole-radius")
+                  .description("Horizontal distance in blocks that counts as 'my hole'.")
+                  .defaultValue(4)
+                  .range(1, 10)
+                  .visible(ignoreOwnHoles::get)
+                  .build());
+
+              private final Setting<Integer> relocateRadius = sgHoles.add(new IntSetting.Builder()
+                  .name("relocate-radius")
+                  .description("How many chunks away to look for a chunk without holes.")
+                  .defaultValue(3)
+                  .range(1, 8)
+                  .build());
+
+              private final Setting<SettingColor> highColor = sgRender.add(new ColorSetting.Builder()
+                  .name("high-color")
+                  .description("Color for sus chunks with lots of buds.")
+                  .defaultValue(new SettingColor(0, 255, 0, 255))
+                  .build());
+
+              private final Setting<SettingColor> lowColor = sgRender.add(new ColorSetting.Builder()
+                  .name("low-color")
+                  .description("Color for sus chunks with fewer buds.")
+                  .defaultValue(new SettingColor(0, 110, 255, 255))
+                  .build());
+
+              private final Setting<Integer> fillAlpha = sgRender.add(new IntSetting.Builder()
+                  .name("fill-opacity")
+                  .description("Opacity of the flat plane (0-255).")
+                  .defaultValue(80)
+                  .range(5, 255)
+                  .sliderRange(5, 255)
+                  .build());
+
+              private final Setting<Double> planeOffset = sgRender.add(new DoubleSetting.Builder()
+                  .name("height-above-ground")
+                  .description("How far above the ground the plane floats.")
+                  .defaultValue(0.1)
+                  .range(0.0, 3.0)
+                  .sliderRange(0.0, 3.0)
+                  .build());
+
+              private final Setting<Integer> renderRange = sgRender.add(new IntSetting.Builder()
+                  .name("render-range")
+                  .description("Only draw markers within this many chunks of you.")
+                  .defaultValue(32)
+                  .range(4, 128)
+                  .sliderRange(4, 64)
+                  .build());
+
+              private final Setting<Boolean> tracers = sgRender.add(new BoolSetting.Builder()
+                  .name("tracers")
+                  .description("Draw a line to each marker.")
+                  .defaultValue(false)
+                  .build());
+
+              // ---------------------------------------------------------------- state
+              /** Result of scanning one chunk. */
+              private record ChunkInfo(int buds, long[] holes) {}
+
+              /** A final marker to draw. */
+              private record Marker(int cx, int cz, int buds, int members) {}
+
+              // Main-thread only
+              private final Long2ObjectOpenHashMap<ChunkInfo> chunks = new Long2ObjectOpenHashMap<>();
+              private final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+              private final LongOpenHashSet queued = new LongOpenHashSet();
+              private final Long2IntOpenHashMap delayed = new Long2IntOpenHashMap();   // chunk key -> tick when it may be scanned
+              private final Long2IntOpenHashMap attempts = new Long2IntOpenHashMap();  // chunk key -> failed scan attempts
+              private final LongOpenHashSet ownHoles = new LongOpenHashSet();          // shaft columns that are "mine"
+
+              // Written by the network thread, drained on the main thread
+              private final ConcurrentLinkedQueue<Long> incoming = new ConcurrentLinkedQueue<>();
+
+              // Written on main thread, read by the render thread (same thread in practice, volatile to be safe)
+              private volatile List<Marker> markers = List.of();
+
+              private ClientWorld lastWorld;
+              private int tickCount;
+              private boolean dirty;
+              private int lastSignature;
+
+              public SusChunkV2() {
+                  super(SusChunkV2Addon.CATEGORY, "sus-chunk-v2",
+                      "Bud-count sus chunks with clustering, hole filtering and flat through-walls markers.");
+              }
+
+              // ---------------------------------------------------------------- lifecycle
+              @Override
+              public void onActivate() {
+                  reset();
+                  lastWorld = mc.world;
+                  enqueueLoaded();
+              }
+
+              @Override
+              public void onDeactivate() {
+                  reset();
+                  lastWorld = null;
+              }
+
+              private void reset() {
+                  chunks.clear();
+                  queue.clear();
+                  queued.clear();
+                  delayed.clear();
+                  attempts.clear();
+                  ownHoles.clear();
+                  incoming.clear();
+                  markers = List.of();
+                  tickCount = 0;
+                  dirty = false;
+                  lastSignature = 0;
+              }
+
+              private void enqueueLoaded() {
+                  if (mc.world == null || mc.player == null) return;
+                  int r = mc.options.getViewDistance().getValue() + 1;
+                  ChunkPos center = mc.player.getChunkPos();
+                  for (int x = center.x - r; x <= center.x + r; x++) {
+                      for (int z = center.z - r; z <= center.z + r; z++) {
+                          if (mc.world.getChunkManager().isChunkLoaded(x, z)) enqueue(ChunkPos.toLong(x, z));
+                      }
+                  }
+              }
+
+              private void enqueue(long key) {
+                  if (queued.add(key)) queue.enqueue(key);
+              }
+
+              // ---------------------------------------------------------------- packets
+              @EventHandler
+              private void onPacket(PacketEvent.Receive event) {
+                  Packet<?> packet = event.packet;
+                  if (packet instanceof ChunkDataS2CPacket p) {
+                      incoming.add(ChunkPos.toLong(p.getChunkX(), p.getChunkZ()));
+                  } else if (packet instanceof LightUpdateS2CPacket p) {
+                      incoming.add(ChunkPos.toLong(p.getChunkX(), p.getChunkZ()));
+                  } else if (packet instanceof BlockUpdateS2CPacket p) {
+                      BlockPos pos = p.getPos();
+                      incoming.add(ChunkPos.toLong(pos.getX() >> 4, pos.getZ() >> 4));
+                  } else if (packet instanceof ChunkDeltaUpdateS2CPacket p) {
+                      p.visitUpdates((pos, state) -> incoming.add(ChunkPos.toLong(pos.getX() >> 4, pos.getZ() >> 4)));
+                  }
+              }
+
+              // ---------------------------------------------------------------- tick
+              @EventHandler
+              private void onTick(TickEvent.Post event) {
+                  ClientWorld world = mc.world;
+                  if (world == null || mc.player == null) {
+                      reset();
+                      return;
+                  }
+                  if (world != lastWorld) {
+                      reset();
+                      lastWorld = world;
+                      enqueueLoaded();
+                  }
+                  // Amethyst geodes only exist in the overworld.
+                  if (world.getRegistryKey() != World.OVERWORLD) {
+                      if (!chunks.isEmpty()) reset();
+                      return;
+                  }
+
+                  tickCount++;
+
+                  // Packets: wait a couple of ticks so chunk + light data is really applied before scanning.
+                  Long k;
+                  while ((k = incoming.poll()) != null) {
+                      if (!delayed.containsKey(k.longValue())) delayed.put(k.longValue(), tickCount + 2);
+                  }
+                  if (!delayed.isEmpty()) {
+                      Iterator<Long2IntMap.Entry> it = delayed.long2IntEntrySet().iterator();
+                      while (it.hasNext()) {
+                          Long2IntMap.Entry e = it.next();
+                          if (e.getIntValue() <= tickCount) {
+                              enqueue(e.getLongKey());
+                              it.remove();
+                          }
+                      }
+                  }
+
+                  // Scan a few chunks within the time budget.
+                  long deadline = System.nanoTime() + SCAN_BUDGET_NANOS;
+                  while (!queue.isEmpty() && System.nanoTime() < deadline) {
+                      long key = queue.dequeueLong();
+                      queued.remove(key);
+                      int cx = ChunkPos.getPackedX(key);
+                      int cz = ChunkPos.getPackedZ(key);
+
+                      WorldChunk chunk = world.getChunkManager().isChunkLoaded(cx, cz)
+                          ? world.getChunkManager().getWorldChunk(cx, cz) : null;
+                      if (chunk == null) {
+                          // Not applied yet (or unloaded). Retry a few times, then forget it.
+                          if (attempts.addTo(key, 1) < 10) delayed.put(key, tickCount + 4);
+                          else attempts.remove(key);
+                          if (chunks.remove(key) != null) dirty = true;
+                          continue;
+                      }
+                      attempts.remove(key);
+                      chunks.put(key, scan(world, chunk));
+                      dirty = true;
+                  }
+
+                  // Remember shafts near the player as "mine" so they never move the marker.
+                  trackOwnHoles();
+
+                  // Drop data for chunks that are no longer loaded.
+                  if (tickCount % 100 == 0) {
+                      LongIterator it = chunks.keySet().iterator();
+                      while (it.hasNext()) {
+                          long key = it.nextLong();
+                          if (!world.getChunkManager().isChunkLoaded(ChunkPos.getPackedX(key), ChunkPos.getPackedZ(key))) {
+                              it.remove();
+                              dirty = true;
+                          }
+                      }
+                  }
+
+                  // Re-evaluate markers when data or settings changed.
+                  int sig = settingsSignature();
+                  if (sig != lastSignature) {
+                      lastSignature = sig;
+                      dirty = true;
+                  }
+                  if (dirty && tickCount % 5 == 0) {
+                      dirty = false;
+                      markers = evaluate();
+                  }
+              }
+
+              private int settingsSignature() {
+                  return Arrays.hashCode(new int[]{
+                      lowThreshold.get(), highThreshold.get(), clusterRadius.get(), minClusterSize.get(),
+                      detectHoles.get() ? 1 : 0, ignoreOwnHoles.get() ? 1 : 0, relocateRadius.get(),
+                      hiddenBuds.get() ? 1 : 0, visibleBuds.get() ? 1 : 0, minHoleDepth.get()
+                  });
+              }
+
+              // ---------------------------------------------------------------- scanning
+              private ChunkInfo scan(ClientWorld world, WorldChunk chunk) {
+                  int buds = 0;
+                  boolean wantHidden = hiddenBuds.get();
+                  boolean wantVisible = visibleBuds.get();
+
+                  if (wantHidden || wantVisible) {
+                      ChunkSection[] sections = chunk.getSectionArray();
+                      int minY = chunk.getBottomY();
+                      ChunkPos pos = chunk.getPos();
+                      int startX = pos.getStartX();
+                      int startZ = pos.getStartZ();
+                      BlockPos.Mutable cursor = new BlockPos.Mutable();
+
+                      for (int i = 0; i < sections.length; i++) {
+                          ChunkSection section = sections[i];
+                          if (section == null || section.isEmpty()) continue;
+
+                          boolean hasBudBlocks = wantVisible && section.getBlockStateContainer().hasAny(SusChunkV2::isBudBlock);
+                          boolean hasGeode = wantHidden && section.getBlockStateContainer().hasAny(SusChunkV2::isGeodeBlock);
+                          if (!hasBudBlocks && !hasGeode) continue;
+
+                          int baseY = minY + i * 16;
+                          for (int y = 0; y < 16; y++) {
+                              for (int z = 0; z < 16; z++) {
+                                  for (int x = 0; x < 16; x++) {
+                                      BlockState state = section.getBlockState(x, y, z);
+
+                                      // Light-emitting blocks are real buds the server sent us.
+                                      if (state.getLuminance() > 0) {
+                                          if (hasBudBlocks && isBudBlock(state)) buds++;
+                                          continue;
+                                      }
+                                      if (!hasGeode) continue;
+
+                                      // Hidden bud: a non-lit position that still has bud-level light, touches
+                                      // a geode block and is brighter than its neighbours.
+                                      cursor.set(startX + x, baseY + y, startZ + z);
+                                      int light = world.getLightLevel(LightType.BLOCK, cursor);
+                                      if (!isBudLight(light) || !touchesGeode(world, cursor) || !isLocalMaximum(world, cursor, light)) continue;
+                                      buds++;
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  return new ChunkInfo(buds, detectHoles.get() ? findHoles(chunk) : NO_HOLES);
+              }
+
+              /**
+               * A dug shaft shows up in the surface heightmap as a column that is much lower than all
+               * four of its neighbours. Border columns are skipped because their neighbours are in other chunks.
+               */
+              private long[] findHoles(WorldChunk chunk) {
+                  Heightmap hm = chunk.getHeightmap(Heightmap.Type.WORLD_SURFACE);
+                  int minDepth = minHoleDepth.get();
+                  int startX = chunk.getPos().getStartX();
+                  int startZ = chunk.getPos().getStartZ();
+                  LongArrayList out = null;
+
+                  for (int x = 1; x < 15; x++) {
+                      for (int z = 1; z < 15; z++) {
+                          int h = hm.get(x, z);
+                          int lowestNeighbour = Math.min(
+                              Math.min(hm.get(x - 1, z), hm.get(x + 1, z)),
+                              Math.min(hm.get(x, z - 1), hm.get(x, z + 1)));
+                          if (lowestNeighbour - h < minDepth) continue;
+
+                          if (out == null) out = new LongArrayList();
+                          out.add(packColumn(startX + x, startZ + z));
+                      }
+                  }
+                  return out == null ? NO_HOLES : out.toLongArray();
+              }
+
+              private static long packColumn(int x, int z) {
+                  return ((long) x << 32) | (z & 0xFFFFFFFFL);
+              }
+
+              private void trackOwnHoles() {
+                  if (!ignoreOwnHoles.get() || !detectHoles.get() || mc.player == null) return;
+                  BlockPos p = mc.player.getBlockPos();
+                  int r = ownHoleRadius.get();
+                  int pcx = p.getX() >> 4;
+                  int pcz = p.getZ() >> 4;
+                  for (int dx = -1; dx <= 1; dx++) {
+                      for (int dz = -1; dz <= 1; dz++) {
+                          ChunkInfo info = chunks.get(ChunkPos.toLong(pcx + dx, pcz + dz));
+                          if (info == null || info.holes().length == 0) continue;
+                          for (long col : info.holes()) {
+                              int hx = (int) (col >> 32);
+                              int hz = (int) col;
+                              if (Math.abs(hx - p.getX()) <= r && Math.abs(hz - p.getZ()) <= r && ownHoles.add(col)) dirty = true;
+                          }
+                      }
+                  }
+              }
+
+              // ---------------------------------------------------------------- hidden-bud helpers (same logic as AmethystBypass "Hidden Buds")
+              private static boolean isGeodeBlock(BlockState state) {
+                  return state.isOf(Blocks.AMETHYST_BLOCK) || state.isOf(Blocks.BUDDING_AMETHYST);
+              }
+
+              private static boolean isBudBlock(BlockState state) {
+                  return state.isOf(Blocks.SMALL_AMETHYST_BUD) || state.isOf(Blocks.MEDIUM_AMETHYST_BUD)
+                      || state.isOf(Blocks.LARGE_AMETHYST_BUD) || state.isOf(Blocks.AMETHYST_CLUSTER);
+              }
+
+              /** Block light given off by small, medium, large buds and clusters is 1, 2, 4 and 5. */
+              private static boolean isBudLight(int light) {
+                  return light == 1 || light == 2 || light == 4 || light == 5;
+              }
+
+              private static boolean touchesGeode(ClientWorld world, BlockPos pos) {
+                  for (Direction d : Direction.values()) {
+                      if (isGeodeBlock(world.getBlockState(pos.offset(d)))) return true;
+                  }
+                  return false;
+              }
+
+              private static boolean isLocalMaximum(ClientWorld world, BlockPos pos, int light) {
+                  for (Direction d : Direction.values()) {
+                      if (world.getLightLevel(LightType.BLOCK, pos.offset(d)) >= light) return false;
+                  }
+                  return true;
+              }
+
+              // ---------------------------------------------------------------- marker building
+              private int holeCount(long key) {
+                  ChunkInfo info = chunks.get(key);
+                  if (info == null || info.holes().length == 0) return 0;
+                  if (!ignoreOwnHoles.get()) return info.holes().length;
+                  int n = 0;
+                  for (long col : info.holes()) if (!ownHoles.contains(col)) n++;
+                  return n;
+              }
+
+              private List<Marker> evaluate() {
+                  int low = lowThreshold.get();
+
+                  // 1) Chunks that have enough buds.
+                  LongArrayList keys = new LongArrayList();
+                  List<Integer> weights = new ArrayList<>();
+                  for (Long2ObjectMap.Entry<ChunkInfo> e : chunks.long2ObjectEntrySet()) {
+                      if (e.getValue().buds() >= low) {
+                          keys.add(e.getLongKey());
+                          weights.add(e.getValue().buds());
+                      }
+                  }
+                  int n = keys.size();
+                  if (n == 0) return List.of();
+
+                  // 2) Group chunks that are within cluster-radius of each other (union-find).
+                  int[] parent = new int[n];
+                  for (int i = 0; i < n; i++) parent[i] = i;
+                  int radius = clusterRadius.get();
+                  for (int i = 0; i < n; i++) {
+                      int ax = ChunkPos.getPackedX(keys.getLong(i));
+                      int az = ChunkPos.getPackedZ(keys.getLong(i));
+                      for (int j = i + 1; j < n; j++) {
+                          int bx = ChunkPos.getPackedX(keys.getLong(j));
+                          int bz = ChunkPos.getPackedZ(keys.getLong(j));
+                          if (Math.max(Math.abs(ax - bx), Math.abs(az - bz)) <= radius) union(parent, i, j);
+                      }
+                  }
+                  Map<Integer, List<Integer>> groups = new LinkedHashMap<>();
+                  for (int i = 0; i < n; i++) groups.computeIfAbsent(find(parent, i), r -> new ArrayList<>()).add(i);
+
+                  // 3) Turn groups into markers: big groups become ONE marker at the bud-weighted centre.
+                  Map<Long, Marker> result = new LinkedHashMap<>();
+                  int minCluster = minClusterSize.get();
+                  for (List<Integer> group : groups.values()) {
+                      if (group.size() >= minCluster) {
+                          double sx = 0, sz = 0;
+                          int total = 0;
+                          for (int idx : group) {
+                              int w = weights.get(idx);
+                              sx += (double) ChunkPos.getPackedX(keys.getLong(idx)) * w;
+                              sz += (double) ChunkPos.getPackedZ(keys.getLong(idx)) * w;
+                              total += w;
+                          }
+                          int cx = (int) Math.round(sx / total);
+                          int cz = (int) Math.round(sz / total);
+                          place(result, cx, cz, total, group.size());
+                      } else {
+                          for (int idx : group) {
+                              place(result, ChunkPos.getPackedX(keys.getLong(idx)), ChunkPos.getPackedZ(keys.getLong(idx)), weights.get(idx), 1);
+                          }
+                      }
+                  }
+                  return new ArrayList<>(result.values());
+              }
+
+              /** Adds a marker; if its chunk has dug shafts, moves it to the nearest scanned chunk without any. */
+              private void place(Map<Long, Marker> result, int cx, int cz, int buds, int members) {
+                  if (detectHoles.get() && holeCount(ChunkPos.toLong(cx, cz)) > 0) {
+                      long alt = findHoleFreeChunk(cx, cz);
+                      if (alt != Long.MIN_VALUE) {
+                          cx = ChunkPos.getPackedX(alt);
+                          cz = ChunkPos.getPackedZ(alt);
+                      }
+                  }
+                  long key = ChunkPos.toLong(cx, cz);
+                  Marker existing = result.get(key);
+                  if (existing != null) {
+                      result.put(key, new Marker(cx, cz, existing.buds() + buds, existing.members() + members));
+                  } else {
+                      result.put(key, new Marker(cx, cz, buds, members));
+                  }
+              }
+
+              /** Nearest ring first; within a ring prefer the chunk with more buds. */
+              private long findHoleFreeChunk(int cx, int cz) {
+                  int maxR = relocateRadius.get();
+                  for (int r = 1; r <= maxR; r++) {
+                      long best = Long.MIN_VALUE;
+                      int bestBuds = -1;
+                      for (int dx = -r; dx <= r; dx++) {
+                          for (int dz = -r; dz <= r; dz++) {
+                              if (Math.max(Math.abs(dx), Math.abs(dz)) != r) continue;
+                              long key = ChunkPos.toLong(cx + dx, cz + dz);
+                              ChunkInfo info = chunks.get(key);
+                              if (info == null) continue;          // not scanned, can't know if it has holes
+                              if (holeCount(key) > 0) continue;
+                              if (info.buds() > bestBuds) {
+                                  bestBuds = info.buds();
+                                  best = key;
+                              }
+                          }
+                      }
+                      if (best != Long.MIN_VALUE) return best;
+                  }
+                  return Long.MIN_VALUE;
+              }
+
+              private static int find(int[] parent, int i) {
+                  while (parent[i] != i) {
+                      parent[i] = parent[parent[i]];
+                      i = parent[i];
+                  }
+                  return i;
+              }
+
+              private static void union(int[] parent, int a, int b) {
+                  int ra = find(parent, a);
+                  int rb = find(parent, b);
+                  if (ra != rb) parent[rb] = ra;
+              }
+
+              // ---------------------------------------------------------------- rendering
+              @EventHandler
+              private void onRender(Render3DEvent event) {
+                  List<Marker> list = markers;
+                  ClientWorld world = mc.world;
+                  if (list.isEmpty() || world == null || mc.player == null) return;
+
+                  int pcx = mc.player.getChunkPos().x;
+                  int pcz = mc.player.getChunkPos().z;
+                  int range = renderRange.get();
+                  int high = highThreshold.get();
+                  int alpha = fillAlpha.get();
+                  double offset = planeOffset.get();
+                  Vec3d eye = tracers.get() ? mc.player.getCameraPosVec(event.tickDelta) : null;
+
+                  SettingColor hc = highColor.get();
+                  SettingColor lc = lowColor.get();
+                  Color highLine = new Color(hc.r, hc.g, hc.b, 255);
+                  Color highSide = new Color(hc.r, hc.g, hc.b, alpha);
+                  Color lowLine = new Color(lc.r, lc.g, lc.b, 255);
+                  Color lowSide = new Color(lc.r, lc.g, lc.b, alpha);
+
+                  for (Marker m : list) {
+                      if (Math.abs(m.cx() - pcx) > range || Math.abs(m.cz() - pcz) > range) continue;
+
+                      boolean isHigh = m.buds() >= high;
+                      Color line = isHigh ? highLine : lowLine;
+                      Color side = isHigh ? highSide : lowSide;
+
+                      double y = surfaceY(world, m.cx(), m.cz(), mc.player.getY()) + offset;
+                      double x1 = m.cx() * 16.0;
+                      double z1 = m.cz() * 16.0;
+
+                      // event.renderer has no depth test, so the plane shows through walls and terrain.
+                      event.renderer.sideHorizontal(x1, y, z1, x1 + 16.0, z1 + 16.0, side, line, ShapeMode.Both);
+
+                      if (eye != null) event.renderer.line(eye.x, eye.y, eye.z, x1 + 8.0, y, z1 + 8.0, line);
+                  }
+              }
+
+              /**
+               * Ground height for a chunk: the median of 9 sample columns of the surface heightmap.
+               * Water counts as surface, so over oceans this is sea level. The median ignores tree
+               * tops and dug shafts.
+               */
+              private double surfaceY(ClientWorld world, int cx, int cz, double fallback) {
+                  if (!world.getChunkManager().isChunkLoaded(cx, cz)) return fallback;
+                  WorldChunk chunk = world.getChunkManager().getWorldChunk(cx, cz);
+                  if (chunk == null) return fallback;
+                  Heightmap hm = chunk.getHeightmap(Heightmap.Type.WORLD_SURFACE);
+                  int[] samples = new int[9];
+                  int i = 0;
+                  for (int x : new int[]{2, 8, 13}) {
+                      for (int z : new int[]{2, 8, 13}) samples[i++] = hm.get(x, z);
+                  }
+                  Arrays.sort(samples);
+                  return samples[4];
+              }
+          }
+          __SUSCHUNK_EOF__
+          printf 'CC0 1.0 Universal (public domain dedication)\n' > LICENSE
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.2.0
+
+      - name: Build
+        run: gradle build --no-daemon
+
+      - name: Keep only the mod jar
+        run: rm -f build/libs/*-sources.jar build/libs/*-dev.jar
+
+      - name: Upload jar as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: suschunk-v2-jar
+          path: build/libs/*.jar
+
+      - name: Publish jar to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: latest-build
+          name: SusChunk V2 (latest build)
+          prerelease: true
+          files: build/libs/*.jar
